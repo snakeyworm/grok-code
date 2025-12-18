@@ -4,13 +4,16 @@ AI coding assistant powered by xAI's Grok, built to match Claude Code's function
 
 ## Features
 
-- **Full tool suite**: Bash, Read, Write, Edit, Glob, Grep
+- **Full tool suite**: Bash, Read, Write, Edit, Glob, Grep, Web Search, Web Fetch
+- **Vision support**: Read and analyze images (PNG, JPG, GIF, etc.) with automatic model switching
 - **Streaming responses**: Real-time output as the model generates
-- **Conversation management**: Save, load, and resume conversations
-- **Persistent history**: All interactions saved to `~/.grok/history.jsonl`
-- **Permissions system**: Control what tools can be executed
+- **Session management**: Save, resume, and continue conversations with smart filtering
+- **Auto model selection**: Intelligently switches between fast/coding/reasoning/vision models
+- **Cost tracking**: Monitor token usage and API costs with prompt caching
+- **Project configuration**: GROK.md files for project-specific and global instructions
+- **Task management**: Built-in todo tracking with plan mode
 - **Interactive REPL**: Full-featured command-line interface
-- **Settings management**: Customizable configuration
+- **Loop detection**: Prevents infinite tool call loops with automatic recovery
 
 ## Installation
 
@@ -24,12 +27,20 @@ Already installed! The `grok` command is available in your PATH.
 # Single prompt
 grok "Create a hello world program in Python"
 
-# With options
-grok --model grok-3 "Explain this code"
-grok --no-stream "Quick question"
+# Analyze images
+grok "Read screenshot.png and explain the UI issue"
 
-# Load previous conversation
-grok --context conversation.json "Continue where we left off"
+# Session management
+grok --resume                          # List sessions for current directory
+grok --resume <session-id> "continue"  # Resume specific session
+grok -c "continue last conversation"   # Continue most recent session
+
+# Model selection
+grok --model grok-2-vision-1212 "Analyze this image"
+grok --verbose "Debug with detailed output"
+
+# List all sessions
+grok --sessions
 ```
 
 ### Interactive Mode
@@ -40,17 +51,39 @@ grok
 
 #### Interactive Commands
 
-- `/clear` - Clear conversation history
-- `/save <filename>` - Save conversation to JSON file
-- `/load <filename>` - Load conversation from JSON file
+- `/clear` - Start new session
+- `/save` - Save current session
+- `/resume <id>` - Resume specific session
+- `/rename <name>` - Name current session
+- `/sessions` - List sessions for current directory
+- `/sessions all` - List all sessions
+- `/cost` - Show token usage and costs
+- `/verbose` - Toggle verbose mode
+- `/auto` - Toggle auto model selection
+- `/model [name]` - View/change model
+- `/undo` - Remove last exchange
+- `/retry [model]` - Retry last message (optionally with different model)
+- `/history` - View conversation history
+- `/search <query>` - Web search
+- `/plan <task>` - Create implementation plan
 - `/exit` or `/quit` - Exit Grok Code
 
 ### Options
 
-- `--model MODEL` - Specify model (default: grok-3)
+- `--model MODEL` - Specify model (default: grok-code-fast-1)
+  - `grok-3-mini` - Fast, cheap for simple tasks
+  - `grok-code-fast-1` - Balanced coding (default)
+  - `grok-2-vision-1212` - Vision/image analysis
+  - `grok-4-fast-reasoning` - Advanced reasoning
+- `--resume [ID]` - Resume session (lists current dir sessions if no ID)
+- `-c, --continue` - Continue most recent session
+- `--sessions` - List all recent sessions
 - `--no-stream` - Disable streaming responses
-- `--context FILE` - Load conversation context from file
-- `--config-dir DIR` - Use custom configuration directory
+- `--verbose` - Show detailed tool execution
+- `--no-auto-select` - Disable automatic model selection
+- `--name NAME` - Name the session
+- `-p, --print` - Print mode (output only, no UI)
+- `--config-dir DIR` - Custom configuration directory
 - `--version` - Show version number
 
 ## Tools
@@ -65,10 +98,11 @@ grok "List all Python files in the current directory"
 ```
 
 ### read_file
-Read file contents with line numbers
+Read file contents with line numbers. **Supports images** - automatically detects and analyzes PNG, JPG, GIF, and other image formats with vision model.
 
 ```
 grok "Read the file main.py"
+grok "Read screenshot.png and explain what's wrong with the UI"
 ```
 
 ### write_file
@@ -105,36 +139,29 @@ grok "Search for 'TODO' comments in the codebase"
 
 ```
 ~/.grok/
-├── settings.json           # Global settings
-├── settings.local.json     # Local overrides
-├── history.jsonl          # Conversation history
-├── debug/                 # Debug logs
-├── file-history/          # File change history
-├── plans/                 # Saved plans
-├── todos/                 # Todo lists
-├── shell-snapshots/       # Shell state snapshots
-└── downloads/             # Downloaded files
+├── GROK.md               # Global instructions (like CLAUDE.md)
+├── sessions/             # Saved conversation sessions
+└── history.jsonl         # Global conversation log
+
+.grok/                    # Project-specific (in any directory)
+└── GROK.md              # Project-specific instructions
 ```
 
-### Settings
+### GROK.md Instructions
 
-Edit `~/.grok/settings.local.json`:
+Create custom instructions for Grok Code:
 
-```json
-{
-  "permissions": {
-    "allow": ["Bash:*", "Read:*", "Write:*"],
-    "deny": [],
-    "defaultMode": "prompt"
-  }
-}
+**Global**: `~/.grok/GROK.md` - applies to all sessions
+**Project**: `.grok/GROK.md` - applies only to current project
+
+Example:
+```markdown
+# Project Guidelines
+- Use TypeScript for all new files
+- Follow ESLint configuration
+- Write tests for all features
+- Use functional components in React
 ```
-
-#### Permission Modes
-
-- `prompt` - Ask before executing (default)
-- `allow` - Auto-allow
-- `deny` - Auto-deny
 
 ## Environment Variables
 
@@ -146,8 +173,16 @@ Edit `~/.grok/settings.local.json`:
 # Create a web server
 grok "Create a simple HTTP server in Python that serves the current directory"
 
+# Analyze images
+grok "Read screenshot.png and tell me what UI elements are broken"
+grok "Compare design.png with the current UI and list differences"
+
+# Session management
+grok --resume                    # List sessions for this project
+grok -c "Add error handling"     # Continue last session
+
 # Debug code
-grok "Why is this function returning undefined?" --context debug-session.json
+grok "Read error.log and fix the issues in server.js"
 
 # Refactor code
 grok "Refactor the auth.js file to use async/await instead of promises"
@@ -155,8 +190,17 @@ grok "Refactor the auth.js file to use async/await instead of promises"
 # Search codebase
 grok "Find all instances where we connect to the database"
 
-# Run tests
-grok "Run the test suite and fix any failures"
+# Run tests with cost tracking
+grok --verbose "Run the test suite and fix any failures"
+# Then check costs:
+grok --resume <session-id>
+# In interactive mode: /cost
+
+# Web research
+grok "Search for best practices for React hooks and implement them in App.js"
+
+# Planning complex tasks
+grok "Create a plan for adding user authentication with JWT"
 ```
 
 ## Comparison to Claude Code
@@ -168,14 +212,19 @@ Grok Code implements the same core architecture as Claude Code:
 | Streaming responses | ✓ | ✓ |
 | Tool calling | ✓ | ✓ |
 | File operations | ✓ | ✓ |
+| Image analysis | ✓ | ✓ |
 | Shell execution | ✓ | ✓ |
-| Conversation history | ✓ | ✓ |
-| Permissions system | ✓ | ✓ |
+| Session management | ✓ | ✓ |
+| Auto model selection | ✓ | ✓ |
+| Cost tracking | ✓ | ✓ |
 | Interactive mode | ✓ | ✓ |
-| Settings management | ✓ | ✓ |
+| Project config (GROK.md/CLAUDE.md) | ✓ | ✓ |
+| Web search & fetch | ✓ | ✓ |
+| Task planning | ✓ | ✓ |
+| Loop detection | ✓ | ✓ |
 
 ## Version
 
-Grok Code 1.0.0
+Grok Code 3.0.0
 
-Powered by xAI Grok-3
+Powered by xAI (Grok models: mini, code-fast, vision, reasoning)

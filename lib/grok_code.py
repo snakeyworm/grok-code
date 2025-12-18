@@ -28,6 +28,8 @@ except ImportError:
 import concurrent.futures
 import hashlib
 import time
+import base64
+import mimetypes
 
 
 # ============================================================================
@@ -259,6 +261,7 @@ SYSTEM_PROMPT = """Grok Code: AI coding assistant with tools: bash, read_file, w
 
 Rules:
 - Use file tools (NOT bash) for file ops
+- read_file supports images (png, jpg, gif, etc) - vision analysis enabled
 - Always read before editing
 - Match indentation exactly in edits
 - Complete tasks fully (no TODOs)
@@ -282,6 +285,7 @@ class ModelSelector:
     FAST_MODEL = "grok-3-mini"           # Haiku tier: simple, fast, cheap
     CODING_MODEL = "grok-code-fast-1"    # Sonnet tier: balanced coding (DEFAULT)
     REASONING_MODEL = "grok-4-fast-reasoning"  # Opus tier: complex reasoning
+    VISION_MODEL = "grok-2-vision-1212"  # Vision: image analysis
 
     @staticmethod
     def select_model_for_task(prompt: str, current_model: str = None) -> str:
@@ -371,10 +375,46 @@ class BashTool(Tool):
 class ReadTool(Tool):
     def __init__(self):
         super().__init__("Read")
+        self.image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tiff', '.ico'}
+
+    def _is_image(self, file_path: str) -> bool:
+        """Check if file is an image based on extension"""
+        ext = os.path.splitext(file_path)[1].lower()
+        return ext in self.image_extensions
+
+    def _read_image(self, file_path: str) -> str:
+        """Read image file and return base64 encoded data with metadata"""
+        try:
+            with open(file_path, 'rb') as f:
+                image_data = f.read()
+
+            # Get file size
+            file_size = len(image_data)
+            size_kb = file_size / 1024
+
+            # Get mime type
+            mime_type, _ = mimetypes.guess_type(file_path)
+            if not mime_type:
+                mime_type = 'application/octet-stream'
+
+            # Encode to base64
+            base64_data = base64.b64encode(image_data).decode('utf-8')
+
+            # Return special format that chat() will recognize
+            return f"[IMAGE:{file_path}:{mime_type}:{size_kb:.1f}KB:{base64_data}]"
+
+        except Exception as e:
+            return f"Error reading image: {str(e)}"
 
     def execute(self, file_path: str, offset: int = 0, limit: int = 0) -> str:
         try:
             file_path = os.path.expanduser(file_path)
+
+            # Check if it's an image
+            if self._is_image(file_path):
+                return self._read_image(file_path)
+
+            # Regular text file handling
             with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                 lines = f.readlines()
 
@@ -813,7 +853,7 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "read_file",
-                    "description": "Read file with line numbers",
+                    "description": "Read file with line numbers. Supports images (png, jpg, gif, etc) - images are automatically encoded and sent for vision analysis.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1142,6 +1182,7 @@ class GrokClient:
         "grok-3-mini": {"input": 0.20, "output": 0.20},
         "grok-code-fast-1": {"input": 5.00, "output": 15.00},
         "grok-4-fast-reasoning": {"input": 5.00, "output": 15.00},
+        "grok-2-vision-1212": {"input": 2.00, "output": 10.00},
     }
 
     def __init__(self, api_key: str, config_dir: str, model: str = None, session_id: str = None):
@@ -1228,6 +1269,18 @@ class GrokClient:
             session_id=self.session_id,
             grok_md_instructions=self.grok_md_instructions
         )
+
+    def _messages_contain_images(self, messages: List[Dict]) -> bool:
+        """Check if any messages contain image content"""
+        for msg in messages:
+            content = msg.get('content')
+            if isinstance(content, str) and '[IMAGE:' in content:
+                return True
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get('type') == 'image_url':
+                        return True
+        return False
 
     def _detect_tool_loop(self) -> tuple:
         """Detect if we're stuck in a tool call loop"""
@@ -1363,6 +1416,13 @@ class GrokClient:
                 "cache_control": {"type": "ephemeral"}
             }
         ] + self.messages
+
+        # Auto-switch to vision model if images detected
+        if self._messages_contain_images(messages):
+            if working_model != ModelSelector.VISION_MODEL:
+                working_model = ModelSelector.VISION_MODEL
+                if self.verbose:
+                    print(f"\n[Auto-switched to vision model for image analysis]", file=sys.stderr)
 
         max_iterations = 50  # Increased from 25
         iteration = 0
@@ -1574,11 +1634,59 @@ Total cost:    ${self.total_cost:.4f}"""
         if result.startswith("Error:"):
             yield f"\n{result}\n"
 
+    def _process_image_content(self, content: str) -> Any:
+        """Process content and convert [IMAGE:...] tags to vision API format"""
+        import re
+
+        # Check if content contains image tags
+        image_pattern = r'\[IMAGE:([^:]+):([^:]+):([^:]+):([^\]]+)\]'
+        matches = list(re.finditer(image_pattern, content))
+
+        if not matches:
+            return content
+
+        # Build content array with text and images
+        content_parts = []
+        last_end = 0
+
+        for match in matches:
+            # Add text before image
+            text_before = content[last_end:match.start()].strip()
+            if text_before:
+                content_parts.append({"type": "text", "text": text_before})
+
+            # Add image
+            file_path, mime_type, size, base64_data = match.groups()
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{mime_type};base64,{base64_data}"
+                }
+            })
+
+            # Add image metadata as text
+            content_parts.append({
+                "type": "text",
+                "text": f"[Image: {file_path} ({size})]"
+            })
+
+            last_end = match.end()
+
+        # Add remaining text
+        text_after = content[last_end:].strip()
+        if text_after:
+            content_parts.append({"type": "text", "text": text_after})
+
+        return content_parts if content_parts else content
+
     def _add_tool_result(self, tool_call_id: str, result: str, messages: List[Dict]):
+        # Process result for images
+        processed_content = self._process_image_content(result)
+
         tool_message = {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": result
+            "content": processed_content
         }
         self.messages.append(tool_message)
         self.session_manager.log_to_history(self.session_id, tool_message)
@@ -1681,6 +1789,7 @@ def interactive_mode(client: GrokClient):
                     print("\nAvailable models:")
                     print("  grok-3-mini           - Fast, cheap")
                     print("  grok-code-fast-1      - Coding (default)")
+                    print("  grok-2-vision-1212    - Vision/image analysis")
                     print("  grok-3                - Balanced")
                     print("  grok-4-fast-reasoning - Advanced reasoning")
                     continue
