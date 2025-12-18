@@ -70,11 +70,12 @@ grok
 
 ### Options
 
-- `--model MODEL` - Specify model (default: grok-code-fast-1)
-  - `grok-3-mini` - Fast, cheap for simple tasks
-  - `grok-code-fast-1` - Balanced coding (default)
-  - `grok-2-vision-1212` - Vision/image analysis
-  - `grok-4-fast-reasoning` - Advanced reasoning
+- `--model MODEL` - Manually specify model (overrides auto-selection)
+  - `grok-3-mini` - Fast, cheap ($0.20/1M tokens) - auto-selected for simple queries
+  - `grok-code-fast-1` - Coding (default, $5/$15 per 1M) - auto-selected for coding
+  - `grok-3` - Balanced general use ($5/$15 per 1M)
+  - `grok-4-fast-reasoning` - Advanced reasoning ($5/$15 per 1M) - auto-selected for architecture
+  - `grok-2-vision-1212` - Vision (disabled currently, $2/$10 per 1M)
 - `--resume [ID]` - Resume session (lists current dir sessions if no ID)
 - `-c, --continue` - Continue most recent session
 - `--sessions` - List all recent sessions
@@ -132,6 +133,70 @@ Search for patterns in files
 ```
 grok "Search for 'TODO' comments in the codebase"
 ```
+
+## Model Selection
+
+Grok Code supports **both automatic and manual** model selection.
+
+### Automatic Model Selection (Default)
+
+Enabled by default. Analyzes your prompt and automatically chooses the optimal model:
+
+**grok-3-mini** (Fast tier - $0.20/1M):
+- Simple queries: "list files", "find files", "count"
+- File searches with < 15 words
+- Quick operations
+
+**grok-code-fast-1** (Coding tier - $5/$15 per 1M):
+- **Default for most tasks**
+- All coding operations
+- File edits, debugging, refactoring
+- Standard development work
+
+**grok-4-fast-reasoning** (Reasoning tier - $5/$15 per 1M):
+- Architecture design
+- Complex refactoring
+- System design, trade-off analysis
+- Security audits, migration plans
+
+**Examples:**
+```bash
+grok "list files"                    # Auto: grok-3-mini
+grok "fix this bug"                  # Auto: grok-code-fast-1
+grok "design a scalable architecture" # Auto: grok-4-fast-reasoning
+```
+
+### Manual Model Selection
+
+Override auto-selection for specific needs:
+
+**Command line:**
+```bash
+grok --model grok-3-mini "any task"
+grok --model grok-3 "balanced work"
+```
+
+**Interactive mode:**
+```bash
+grok
+❯ /model grok-3-mini        # Switch to fast model
+❯ /model                    # View all options
+❯ /auto                     # Toggle auto-selection on/off
+```
+
+**Disable auto-selection:**
+```bash
+grok --no-auto-select --model grok-3 "use grok-3 for everything"
+```
+
+In interactive mode: `/auto` toggles between automatic and manual mode.
+
+### When to Use Manual Selection
+
+- **Testing**: Compare model outputs
+- **Cost control**: Use grok-3-mini for everything to save money
+- **Specific needs**: Force reasoning model for all tasks
+- **Consistency**: Keep same model across conversation
 
 ## Configuration
 

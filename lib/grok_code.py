@@ -1248,6 +1248,7 @@ class GrokClient:
     # Grok API pricing (per 1M tokens)
     PRICING = {
         "grok-3-mini": {"input": 0.20, "output": 0.20},
+        "grok-3": {"input": 5.00, "output": 15.00},
         "grok-code-fast-1": {"input": 5.00, "output": 15.00},
         "grok-4-fast-reasoning": {"input": 5.00, "output": 15.00},
         "grok-2-vision-1212": {"input": 2.00, "output": 10.00},
@@ -1745,12 +1746,14 @@ def interactive_mode(client: GrokClient):
                 parts = user_input.split(maxsplit=1)
                 if len(parts) < 2:
                     print(f"Current model: {client.model}")
+                    print(f"Auto-select: {'enabled' if client.auto_select_model else 'disabled'}")
                     print("\nAvailable models:")
-                    print("  grok-3-mini           - Fast, cheap")
-                    print("  grok-code-fast-1      - Coding (default)")
-                    print("  grok-2-vision-1212    - Vision/image analysis")
-                    print("  grok-3                - Balanced")
-                    print("  grok-4-fast-reasoning - Advanced reasoning")
+                    print("  grok-3-mini           - Fast, cheap ($0.20/1M tokens)")
+                    print("  grok-code-fast-1      - Coding (default, $5/$15 per 1M)")
+                    print("  grok-3                - Balanced general use")
+                    print("  grok-2-vision-1212    - Vision (disabled, $2/$10 per 1M)")
+                    print("  grok-4-fast-reasoning - Advanced reasoning ($5/$15 per 1M)")
+                    print("\nUsage: /model <name> or /auto to toggle auto-selection")
                     continue
                 client.model = parts[1]
                 print(UI.success(f"Model set to: {client.model}"))
