@@ -686,29 +686,25 @@ class WebSearchTool(Tool):
         try:
             try:
                 from duckduckgo_search import DDGS
-
-                results = []
-                with DDGS() as ddgs:
-                    for i, r in enumerate(ddgs.text(query, max_results=num_results)):
-                        results.append(
-                            f"{i+1}. {r['title']}\n"
-                            f"   URL: {r['href']}\n"
-                            f"   {r['body']}\n"
-                        )
-
-                if results:
-                    return f"Search results for '{query}':\n\n" + "\n".join(results)
-                else:
-                    return f"No results found for '{query}'"
-
             except ImportError:
-                return (
-                    "Error: duckduckgo_search library not installed.\n\n"
-                    "Install with:\n"
-                    "  pip install duckduckgo-search\n"
-                    "or:\n"
-                    "  python -m pip install duckduckgo-search"
-                )
+                # Auto-install duckduckgo_search
+                print("Installing duckduckgo-search...", file=sys.stderr)
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "duckduckgo-search"])
+                from duckduckgo_search import DDGS
+
+            results = []
+            with DDGS() as ddgs:
+                for i, r in enumerate(ddgs.text(query, max_results=num_results)):
+                    results.append(
+                        f"{i+1}. {r['title']}\n"
+                        f"   URL: {r['href']}\n"
+                        f"   {r['body']}\n"
+                    )
+
+            if results:
+                return f"Search results for '{query}':\n\n" + "\n".join(results)
+            else:
+                return f"No results found for '{query}'"
 
         except Exception as e:
             return f"Error performing search: {str(e)}"
@@ -1296,12 +1292,12 @@ class GrokClient:
             sig = f"{tool_name}:{args}"
             signatures.append(sig)
 
-        # Check for identical consecutive calls
+        # Check for identical consecutive calls (EXACT duplicates)
         if len(set(signatures)) == 1:
             tool_name = recent[0]['function']['name']
-            return True, f"Repeated {tool_name} calls with same arguments"
+            return True, f"Repeated {tool_name} calls with identical arguments"
 
-        # Check for ping-pong pattern (A→B→A→B)
+        # Check for ping-pong pattern (A→B→A→B with same args)
         if len(recent) >= 4:
             if (signatures[0] == signatures[2] and
                 signatures[1] == signatures[3] and
@@ -1310,12 +1306,14 @@ class GrokClient:
                 tool_b = recent[1]['function']['name']
                 return True, f"Alternating {tool_a}↔{tool_b} loop"
 
-        # Check for excessive calls to same tool
-        tool_names = [tc['function']['name'] for tc in recent]
-        for tool_name in set(tool_names):
-            count = tool_names.count(tool_name)
+        # Check for excessive IDENTICAL calls (same tool + same args)
+        # This allows legitimate multi-file operations like reading 5 different images
+        from collections import Counter
+        sig_counts = Counter(signatures)
+        for sig, count in sig_counts.items():
             if count >= self.max_identical_calls:
-                return True, f"Excessive {tool_name} calls ({count}/{len(recent)})"
+                tool_name = sig.split(':', 1)[0]
+                return True, f"Repeated identical {tool_name} calls ({count} times)"
 
         return False, ""
 
