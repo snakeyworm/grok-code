@@ -736,24 +736,33 @@ class WebSearchTool(Tool):
 
     def execute(self, query: str, num_results: int = 5) -> str:
         try:
+            # Try new package name first (ddgs), fall back to old (duckduckgo_search)
             try:
-                from duckduckgo_search import DDGS
+                from ddgs import DDGS
             except ImportError:
-                # Try to install
-                if not self._install_package("duckduckgo-search"):
-                    return (
-                        "Error: Could not install duckduckgo-search library.\n\n"
-                        "Please install manually:\n"
-                        "  Arch Linux: sudo pacman -S python-duckduckgo-search\n"
-                        "  or: pip install --user duckduckgo-search\n"
-                        "  or: pip install --break-system-packages duckduckgo-search"
-                    )
-
-                # Try import again after install
                 try:
                     from duckduckgo_search import DDGS
                 except ImportError:
-                    return "Error: Installation succeeded but import still fails. Try restarting grok."
+                    # Try to install new package name first
+                    if not self._install_package("ddgs"):
+                        # Fall back to old package name
+                        if not self._install_package("duckduckgo-search"):
+                            return (
+                                "Error: Could not install ddgs library.\n\n"
+                                "Please install manually:\n"
+                                "  Recommended: pip install --user ddgs\n"
+                                "  Arch Linux: sudo pacman -S python-ddgs\n"
+                                "  Legacy: pip install --break-system-packages ddgs"
+                            )
+
+                    # Try import again after install
+                    try:
+                        from ddgs import DDGS
+                    except ImportError:
+                        try:
+                            from duckduckgo_search import DDGS
+                        except ImportError:
+                            return "Error: Installation succeeded but import still fails. Try restarting grok."
 
             results = []
             with DDGS() as ddgs:
