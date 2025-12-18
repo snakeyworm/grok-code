@@ -695,15 +695,65 @@ class WebSearchTool(Tool):
     def __init__(self):
         super().__init__("WebSearch")
 
+    def _install_package(self, package_name: str) -> bool:
+        """Try to install package using various methods"""
+        # Try pip with --user first (works on most systems)
+        try:
+            print(f"Installing {package_name}...", file=sys.stderr)
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "-q", "--user", package_name],
+                stderr=subprocess.DEVNULL
+            )
+            return True
+        except subprocess.CalledProcessError:
+            pass
+
+        # Try system package managers
+        if os.path.exists("/usr/bin/pacman"):  # Arch Linux
+            try:
+                pkg_name = f"python-{package_name}"
+                print(f"Trying system install: sudo pacman -S --noconfirm {pkg_name}", file=sys.stderr)
+                subprocess.check_call(
+                    ["sudo", "pacman", "-S", "--noconfirm", pkg_name],
+                    stderr=subprocess.DEVNULL
+                )
+                return True
+            except:
+                pass
+
+        # Last resort: --break-system-packages (risky but user chose to use this)
+        try:
+            print(f"Trying pip install with --break-system-packages...", file=sys.stderr)
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "-q", "--break-system-packages", package_name],
+                stderr=subprocess.DEVNULL
+            )
+            return True
+        except subprocess.CalledProcessError:
+            pass
+
+        return False
+
     def execute(self, query: str, num_results: int = 5) -> str:
         try:
             try:
                 from duckduckgo_search import DDGS
             except ImportError:
-                # Auto-install duckduckgo_search
-                print("Installing duckduckgo-search...", file=sys.stderr)
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "duckduckgo-search"])
-                from duckduckgo_search import DDGS
+                # Try to install
+                if not self._install_package("duckduckgo-search"):
+                    return (
+                        "Error: Could not install duckduckgo-search library.\n\n"
+                        "Please install manually:\n"
+                        "  Arch Linux: sudo pacman -S python-duckduckgo-search\n"
+                        "  or: pip install --user duckduckgo-search\n"
+                        "  or: pip install --break-system-packages duckduckgo-search"
+                    )
+
+                # Try import again after install
+                try:
+                    from duckduckgo_search import DDGS
+                except ImportError:
+                    return "Error: Installation succeeded but import still fails. Try restarting grok."
 
             results = []
             with DDGS() as ddgs:
