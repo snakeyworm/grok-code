@@ -1631,11 +1631,24 @@ Total cost:    ${self.total_cost:.4f}"""
 
 
 def interactive_mode(client: GrokClient):
+    # Set up readline with custom key bindings
+    try:
+        import readline
+        # Ctrl+L to clear current line
+        readline.parse_and_bind('"\\C-l": kill-whole-line')
+        # Existing shortcuts work by default:
+        # Ctrl+U: clear from cursor to start
+        # Ctrl+K: clear from cursor to end
+        # Ctrl+W: delete word backward
+    except ImportError:
+        pass  # readline not available on all systems
+
     print(UI.banner())
     print(f"{Colors.MUTED}Model:{Colors.RESET} {Colors.CYAN}{client.model}{Colors.RESET} {Colors.MUTED}|{Colors.RESET} {Colors.MUTED}Session:{Colors.RESET} {Colors.CYAN}{client.session_id[:16]}...{Colors.RESET}")
     print(f"{Colors.MUTED}Directory:{Colors.RESET} {Colors.CYAN}{os.getcwd()}{Colors.RESET}")
     print(f"{Colors.MUTED}Auto-select:{Colors.RESET} {Colors.GREEN if client.auto_select_model else Colors.RED}{'enabled' if client.auto_select_model else 'disabled'}{Colors.RESET}")
-    print(f"\n{Colors.MUTED}Commands: /clear /save /resume /rename /sessions [all] /cost /verbose /auto /model /undo /retry /history /search /plan /exit{Colors.RESET}\n")
+    print(f"\n{Colors.MUTED}Commands: /clear /save /resume /rename /sessions [all] /cost /verbose /auto /model /undo /retry /history /search /plan /exit{Colors.RESET}")
+    print(f"{Colors.MUTED}Shortcuts: Ctrl+L (clear line) | Ctrl+U (clear to start) | Ctrl+K (clear to end) | Ctrl+W (delete word){Colors.RESET}\n")
 
     while True:
         try:
