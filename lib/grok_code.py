@@ -1230,11 +1230,8 @@ class GrokClient:
         self.cache_enabled = True
         self.cache_max_size = 100
 
-        # Hang prevention: Loop detection
-        self.tool_call_history = []
-        self.loop_detection_window = 4
-        self.max_identical_calls = 3
-        self.max_iteration_time = 300  # 5 minutes instead of 120s
+        # Max iteration time for API calls
+        self.max_iteration_time = 300  # 5 minutes
 
         # Parallel execution safe tools
         self.PARALLEL_SAFE_TOOLS = {'read_file', 'glob', 'grep', 'bash'}
@@ -1277,45 +1274,6 @@ class GrokClient:
                     if isinstance(part, dict) and part.get('type') == 'image_url':
                         return True
         return False
-
-    def _detect_tool_loop(self) -> tuple:
-        """Detect if we're stuck in a tool call loop"""
-        if len(self.tool_call_history) < self.loop_detection_window:
-            return False, ""
-
-        recent = self.tool_call_history[-self.loop_detection_window:]
-
-        signatures = []
-        for tc in recent:
-            tool_name = tc['function']['name']
-            args = tc['function']['arguments'][:200]
-            sig = f"{tool_name}:{args}"
-            signatures.append(sig)
-
-        # Check for identical consecutive calls (EXACT duplicates)
-        if len(set(signatures)) == 1:
-            tool_name = recent[0]['function']['name']
-            return True, f"Repeated {tool_name} calls with identical arguments"
-
-        # Check for ping-pong pattern (A→B→A→B with same args)
-        if len(recent) >= 4:
-            if (signatures[0] == signatures[2] and
-                signatures[1] == signatures[3] and
-                signatures[0] != signatures[1]):
-                tool_a = recent[0]['function']['name']
-                tool_b = recent[1]['function']['name']
-                return True, f"Alternating {tool_a}↔{tool_b} loop"
-
-        # Check for excessive IDENTICAL calls (same tool + same args)
-        # This allows legitimate multi-file operations like reading 5 different images
-        from collections import Counter
-        sig_counts = Counter(signatures)
-        for sig, count in sig_counts.items():
-            if count >= self.max_identical_calls:
-                tool_name = sig.split(':', 1)[0]
-                return True, f"Repeated identical {tool_name} calls ({count} times)"
-
-        return False, ""
 
     def _cache_key(self, messages: List[Dict], model: str) -> str:
         """Generate cache key from messages and model"""
@@ -1463,18 +1421,6 @@ class GrokClient:
             else:
                 needs_continuation = yield from self._handle_non_stream_response(response, messages)
 
-            # Check for loops after tool execution
-            if needs_continuation:
-                is_loop, description = self._detect_tool_loop()
-                if is_loop:
-                    yield f"\n⚠️ Loop detected: {description}\n"
-                    yield "Breaking loop. If the task can't be completed, try:\n"
-                    yield "1. Simplifying the request\n"
-                    yield "2. Providing more specific instructions\n"
-                    yield "3. Breaking into smaller tasks\n"
-                    self.tool_call_history = []
-                    break
-
             if not needs_continuation:
                 break
 
@@ -1607,11 +1553,6 @@ Output tokens: {self.total_output_tokens:,}
 Total cost:    ${self.total_cost:.4f}"""
 
     def _execute_tool_call(self, tool_call: Dict, messages: List[Dict]) -> Iterator[str]:
-        # Track tool call for loop detection
-        self.tool_call_history.append(tool_call)
-        if len(self.tool_call_history) > 20:
-            self.tool_call_history = self.tool_call_history[-20:]
-
         tool_name = tool_call["function"]["name"]
 
         try:
