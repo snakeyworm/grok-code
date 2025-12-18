@@ -261,7 +261,7 @@ SYSTEM_PROMPT = """Grok Code: AI coding assistant with tools: bash, read_file, w
 
 Rules:
 - Use file tools (NOT bash) for file ops
-- read_file supports images (png, jpg, gif, etc) - vision analysis enabled
+- read_file detects images and returns metadata (size, type, dimensions)
 - Always read before editing
 - Match indentation exactly in edits
 - Complete tasks fully (no TODOs)
@@ -383,7 +383,7 @@ class ReadTool(Tool):
         return ext in self.image_extensions
 
     def _read_image(self, file_path: str) -> str:
-        """Read image file and return base64 encoded data with metadata"""
+        """Read image file and return metadata (vision not yet supported)"""
         try:
             with open(file_path, 'rb') as f:
                 image_data = f.read()
@@ -391,17 +391,30 @@ class ReadTool(Tool):
             # Get file size
             file_size = len(image_data)
             size_kb = file_size / 1024
+            size_mb = size_kb / 1024
 
             # Get mime type
             mime_type, _ = mimetypes.guess_type(file_path)
             if not mime_type:
                 mime_type = 'application/octet-stream'
 
-            # Encode to base64
-            base64_data = base64.b64encode(image_data).decode('utf-8')
+            # Get image dimensions if possible
+            dimensions = ""
+            try:
+                from PIL import Image
+                import io
+                img = Image.open(io.BytesIO(image_data))
+                dimensions = f", {img.width}x{img.height}px"
+            except:
+                pass
 
-            # Return special format that chat() will recognize
-            return f"[IMAGE:{file_path}:{mime_type}:{size_kb:.1f}KB:{base64_data}]"
+            # Return text description
+            if size_mb >= 1:
+                size_str = f"{size_mb:.1f}MB"
+            else:
+                size_str = f"{size_kb:.1f}KB"
+
+            return f"Image file: {file_path}\nType: {mime_type}\nSize: {size_str}{dimensions}\n\nNote: Image analysis/vision is not yet supported. This is just metadata about the image file."
 
         except Exception as e:
             return f"Error reading image: {str(e)}"
@@ -849,7 +862,7 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "read_file",
-                    "description": "Read file with line numbers. Supports images (png, jpg, gif, etc) - images are automatically encoded and sent for vision analysis.",
+                    "description": "Read file with line numbers. Detects images (png, jpg, gif, etc) and returns metadata (size, type, dimensions).",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1263,17 +1276,6 @@ class GrokClient:
             grok_md_instructions=self.grok_md_instructions
         )
 
-    def _messages_contain_images(self, messages: List[Dict]) -> bool:
-        """Check if any messages contain image content"""
-        for msg in messages:
-            content = msg.get('content')
-            if isinstance(content, str) and '[IMAGE:' in content:
-                return True
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and part.get('type') == 'image_url':
-                        return True
-        return False
 
     def _cache_key(self, messages: List[Dict], model: str) -> str:
         """Generate cache key from messages and model"""
@@ -1373,12 +1375,6 @@ class GrokClient:
             }
         ] + self.messages
 
-        # Auto-switch to vision model if images detected
-        if self._messages_contain_images(messages):
-            if working_model != ModelSelector.VISION_MODEL:
-                working_model = ModelSelector.VISION_MODEL
-                if self.verbose:
-                    print(f"\n[Auto-switched to vision model for image analysis]", file=sys.stderr)
 
         max_iterations = 50  # Increased from 25
         iteration = 0
@@ -1573,59 +1569,11 @@ Total cost:    ${self.total_cost:.4f}"""
         if result.startswith("Error:"):
             yield f"\n{result}\n"
 
-    def _process_image_content(self, content: str) -> Any:
-        """Process content and convert [IMAGE:...] tags to vision API format"""
-        import re
-
-        # Check if content contains image tags
-        image_pattern = r'\[IMAGE:([^:]+):([^:]+):([^:]+):([^\]]+)\]'
-        matches = list(re.finditer(image_pattern, content))
-
-        if not matches:
-            return content
-
-        # Build content array with text and images
-        content_parts = []
-        last_end = 0
-
-        for match in matches:
-            # Add text before image
-            text_before = content[last_end:match.start()].strip()
-            if text_before:
-                content_parts.append({"type": "text", "text": text_before})
-
-            # Add image
-            file_path, mime_type, size, base64_data = match.groups()
-            content_parts.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{mime_type};base64,{base64_data}"
-                }
-            })
-
-            # Add image metadata as text
-            content_parts.append({
-                "type": "text",
-                "text": f"[Image: {file_path} ({size})]"
-            })
-
-            last_end = match.end()
-
-        # Add remaining text
-        text_after = content[last_end:].strip()
-        if text_after:
-            content_parts.append({"type": "text", "text": text_after})
-
-        return content_parts if content_parts else content
-
     def _add_tool_result(self, tool_call_id: str, result: str, messages: List[Dict]):
-        # Process result for images
-        processed_content = self._process_image_content(result)
-
         tool_message = {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": processed_content
+            "content": result
         }
         self.messages.append(tool_message)
         self.session_manager.log_to_history(self.session_id, tool_message)
