@@ -25,11 +25,28 @@ except ImportError:
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
 
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+    from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.styles import Style
+    from prompt_toolkit.history import FileHistory
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--user", "prompt_toolkit"])
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+    from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.styles import Style
+    from prompt_toolkit.history import FileHistory
+
 import concurrent.futures
 import hashlib
 import time
 import base64
 import mimetypes
+import signal
 
 
 # ============================================================================
@@ -1640,31 +1657,186 @@ Total cost:    ${self.total_cost:.4f}"""
         messages.append(tool_message)
 
 
-def interactive_mode(client: GrokClient):
-    # Set up readline with custom key bindings
-    try:
-        import readline
-        # Ctrl+L to clear current line
-        readline.parse_and_bind('"\\C-l": kill-whole-line')
-        # Existing shortcuts work by default:
-        # Ctrl+U: clear from cursor to start
-        # Ctrl+K: clear from cursor to end
-        # Ctrl+W: delete word backward
-    except ImportError:
-        pass  # readline not available on all systems
+class FilePathCompleter(Completer):
+    """File path autocompleter for @ mentions"""
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
 
+        # Only complete after @
+        if '@' not in text:
+            return
+
+        # Get the part after the last @
+        parts = text.split('@')
+        if len(parts) < 2:
+            return
+
+        path_part = parts[-1]
+
+        # Expand ~
+        if path_part.startswith('~'):
+            path_part = os.path.expanduser(path_part)
+
+        # Get directory and partial filename
+        if '/' in path_part:
+            dir_path = os.path.dirname(path_part) or '.'
+            partial = os.path.basename(path_part)
+        else:
+            dir_path = '.'
+            partial = path_part
+
+        # List matching files
+        try:
+            if os.path.isdir(dir_path):
+                for item in os.listdir(dir_path):
+                    if item.startswith(partial) or not partial:
+                        full_path = os.path.join(dir_path, item)
+                        if os.path.isdir(full_path):
+                            display = item + '/'
+                        else:
+                            display = item
+                        yield Completion(
+                            text=item,
+                            start_position=-len(partial),
+                            display=display
+                        )
+        except (PermissionError, FileNotFoundError):
+            pass
+
+
+def create_key_bindings(client, session):
+    """Create custom key bindings for Grok Code"""
+    kb = KeyBindings()
+
+    # Ctrl+C - Cancel/KeyboardInterrupt
+    @kb.add(Keys.ControlC)
+    def _(event):
+        event.app.exit(exception=KeyboardInterrupt())
+
+    # Ctrl+D - Exit
+    @kb.add(Keys.ControlD)
+    def _(event):
+        event.app.exit(exception=EOFError())
+
+    # Ctrl+O - Toggle verbose
+    @kb.add(Keys.ControlO)
+    def _(event):
+        client.verbose = not client.verbose
+        print(f"\n{UI.success(f'Verbose: {'on' if client.verbose else 'off'}')}")
+        event.app.invalidate()
+
+    # Ctrl+L - Clear screen
+    @kb.add(Keys.ControlL)
+    def _(event):
+        event.app.renderer.clear()
+
+    return kb
+
+
+def interactive_mode(client: GrokClient):
+    """Interactive REPL mode with enhanced keyboard shortcuts and multiline support"""
+
+    # Startup banner and tips
     print(UI.banner())
     print(f"{Colors.MUTED}Model:{Colors.RESET} {Colors.CYAN}{client.model}{Colors.RESET} {Colors.MUTED}|{Colors.RESET} {Colors.MUTED}Session:{Colors.RESET} {Colors.CYAN}{client.session_id[:16]}...{Colors.RESET}")
     print(f"{Colors.MUTED}Directory:{Colors.RESET} {Colors.CYAN}{os.getcwd()}{Colors.RESET}")
     print(f"{Colors.MUTED}Auto-select:{Colors.RESET} {Colors.GREEN if client.auto_select_model else Colors.RED}{'enabled' if client.auto_select_model else 'disabled'}{Colors.RESET}")
-    print(f"\n{Colors.MUTED}Commands: /clear /save /resume /rename /sessions [all] /cost /verbose /auto /model /undo /retry /history /search /plan /exit{Colors.RESET}")
-    print(f"{Colors.MUTED}Shortcuts: Ctrl+L (clear line) | Ctrl+U (clear to start) | Ctrl+K (clear to end) | Ctrl+W (delete word){Colors.RESET}\n")
 
+    # Show random tip
+    tips = [
+        "Tip: Use @ to autocomplete file paths",
+        "Tip: Use ! for direct bash commands",
+        "Tip: Use # to add notes to GROK.md",
+        "Tip: Press Ctrl+C to cancel generation",
+        "Tip: Use /help to see all commands",
+        "Tip: Use /rewind to go back in conversation",
+        "Tip: Press Ctrl+D to exit",
+        "Tip: Use \\ + Enter for multiline input",
+    ]
+    import random
+    print(f"\n{Colors.MUTED}{random.choice(tips)}{Colors.RESET}")
+
+    print(f"\n{Colors.MUTED}Commands: /help /clear /resume /sessions /cost /verbose /auto /model /undo /retry /rewind /context /exit{Colors.RESET}")
+    print(f"{Colors.MUTED}Shortcuts: Ctrl+C (cancel) | Ctrl+D (exit) | Ctrl+O (verbose) | Ctrl+L (clear screen){Colors.RESET}")
+    print(f"{Colors.MUTED}Prefixes: @ (file) | ! (bash) | # (memory) | / (command){Colors.RESET}\n")
+
+    # Create prompt session with history
+    history_file = os.path.join(client.config_dir, 'prompt_history')
+    os.makedirs(client.config_dir, exist_ok=True)
+
+    # Create completer and key bindings
+    completer = FilePathCompleter()
+
+    # Prompt style
+    style = Style.from_dict({
+        'prompt': '#00aa00 bold',
+    })
+
+    # Create session
+    session = PromptSession(
+        history=FileHistory(history_file),
+        completer=completer,
+        complete_while_typing=True,
+        multiline=False,
+        style=style,
+    )
+
+    # Key bindings
+    kb = create_key_bindings(client, session)
+
+    # Main loop
     while True:
         try:
-            user_input = input(UI.prompt()).strip()
+            # Get input with prompt_toolkit
+            user_input = session.prompt(
+                UI.prompt(),
+                key_bindings=kb,
+                enable_open_in_editor=True,
+            ).strip()
 
             if not user_input:
+                continue
+
+            # Handle multiline input (lines ending with \)
+            while user_input.endswith('\\'):
+                user_input = user_input[:-1]  # Remove \
+                continuation = session.prompt('... ', key_bindings=kb).strip()
+                user_input += '\n' + continuation
+
+            # /help command
+            if user_input == '/help':
+                print("\n" + UI.info("Grok Code Commands:"))
+                print("\nSession Management:")
+                print("  /clear        - Start new session")
+                print("  /save         - Save current session")
+                print("  /resume <id>  - Resume session by ID")
+                print("  /rename <name>- Rename current session")
+                print("  /sessions     - List sessions (current dir)")
+                print("  /sessions all - List all sessions")
+                print("  /exit, /quit  - Exit Grok Code (Ctrl+D)")
+
+                print("\nConversation:")
+                print("  /undo         - Remove last exchange")
+                print("  /retry [model]- Retry last message")
+                print("  /rewind       - Go back to specific message")
+                print("  /history      - View conversation")
+                print("  /context      - Show context usage")
+
+                print("\nSettings:")
+                print("  /model [name] - View/change model")
+                print("  /auto         - Toggle auto model selection")
+                print("  /verbose      - Toggle verbose mode (Ctrl+O)")
+                print("  /cost         - Show token usage and cost")
+
+                print("\nTools:")
+                print("  /search <q>   - Web search")
+                print("  /plan <task>  - Create implementation plan")
+
+                print("\nPrefixes:")
+                print("  @ <path>      - File path (autocomplete enabled)")
+                print("  ! <cmd>       - Direct bash execution")
+                print("  # <note>      - Add to GROK.md memory")
+                print()
                 continue
 
             if user_input.lower() in ['/exit', '/quit']:
@@ -1858,6 +2030,85 @@ def interactive_mode(client: GrokClient):
                 print()
                 continue
 
+            # /rewind command
+            if user_input == '/rewind':
+                print("\nConversation Messages:")
+                print("-" * 60)
+                user_messages = []
+                for i, msg in enumerate(client.messages):
+                    if msg['role'] == 'user':
+                        content = msg.get('content', '')[:80]
+                        user_messages.append((i, content))
+                        print(f"{len(user_messages)}. [{i}] {content}")
+
+                if not user_messages:
+                    print("No user messages to rewind to")
+                    print("-" * 60)
+                    continue
+
+                print("-" * 60)
+                choice = session.prompt("Select message number to rewind to (or Enter to cancel): ").strip()
+
+                if choice.isdigit():
+                    choice_num = int(choice) - 1
+                    if 0 <= choice_num < len(user_messages):
+                        rewind_idx = user_messages[choice_num][0]
+                        removed = len(client.messages) - rewind_idx
+                        client.messages = client.messages[:rewind_idx]
+                        print(UI.success(f"Rewound to message {choice_num + 1} ({removed} messages removed)"))
+                    else:
+                        print(UI.error("Invalid choice"))
+                continue
+
+            # /context command
+            if user_input == '/context':
+                # Simple context visualization
+                total_tokens = sum(len(str(msg.get('content', '')).split()) for msg in client.messages)
+                est_tokens = int(total_tokens * 1.3)  # Rough estimate
+                max_tokens = 128000  # Grok context window
+
+                usage_pct = (est_tokens / max_tokens) * 100
+                bar_width = 50
+                filled = int((usage_pct / 100) * bar_width)
+                bar = '█' * filled + '░' * (bar_width - filled)
+
+                print(f"\nContext Usage:")
+                print(f"[{bar}] {usage_pct:.1f}%")
+                print(f"Estimated tokens: {est_tokens:,} / {max_tokens:,}")
+                print(f"Messages: {len(client.messages)}")
+                print()
+                continue
+
+            # PREFIX HANDLERS
+
+            # # prefix - Add to GROK.md
+            if user_input.startswith('#'):
+                note = user_input[1:].strip()
+                if note:
+                    # Add to project GROK.md or global
+                    grok_md = os.path.join(os.getcwd(), '.grok', 'GROK.md')
+                    if not os.path.exists(os.path.dirname(grok_md)):
+                        grok_md = os.path.join(client.config_dir, 'GROK.md')
+
+                    os.makedirs(os.path.dirname(grok_md), exist_ok=True)
+                    with open(grok_md, 'a') as f:
+                        f.write(f"\n{note}\n")
+
+                    print(UI.success(f"Added to {grok_md}"))
+                continue
+
+            # ! prefix - Direct bash execution
+            if user_input.startswith('!'):
+                bash_cmd = user_input[1:].strip()
+                if bash_cmd:
+                    print()
+                    bash_tool = BashTool()
+                    result = bash_tool.execute(bash_cmd)
+                    print(result)
+                    print()
+                continue
+
+            # Regular chat
             print()
             for chunk in client.chat(user_input, stream=True):
                 print(chunk, end='', flush=True)
@@ -1865,12 +2116,16 @@ def interactive_mode(client: GrokClient):
 
         except KeyboardInterrupt:
             print("\n^C")
+            continue
         except EOFError:
             client.save_session()
             print(f"\nSession saved: {client.session_id}")
             break
         except Exception as e:
             print(f"\nError: {e}")
+            if client.verbose:
+                import traceback
+                traceback.print_exc()
 
     print("Goodbye!")
 
