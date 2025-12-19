@@ -33,7 +33,20 @@ try:
     from prompt_toolkit.styles import Style
     from prompt_toolkit.history import FileHistory
 except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--user", "prompt_toolkit"])
+    # Try multiple installation methods for Arch Linux compatibility
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--user", "prompt_toolkit"], stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        try:
+            if os.path.exists("/usr/bin/pacman"):
+                subprocess.check_call(["sudo", "pacman", "-S", "--noconfirm", "python-prompt_toolkit"], stderr=subprocess.DEVNULL)
+            else:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--break-system-packages", "prompt_toolkit"], stderr=subprocess.DEVNULL)
+        except subprocess.CalledProcessError:
+            print("Error: Could not install prompt_toolkit. Please install manually:", file=sys.stderr)
+            print("  Arch: sudo pacman -S python-prompt_toolkit", file=sys.stderr)
+            print("  Other: pip install --user prompt_toolkit", file=sys.stderr)
+            sys.exit(1)
     from prompt_toolkit import PromptSession
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.keys import Keys
